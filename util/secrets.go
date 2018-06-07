@@ -36,99 +36,140 @@ const charset = "abcdefghijklmnopqrstuvwxyz" +
 var seededRand = rand.New(
 	rand.NewSource(time.Now().UnixNano()))
 
-// CreateDatabaseSecrets create pgroot, pgprimary, and pguser secrets
-func CreateDatabaseSecrets(clientset *kubernetes.Clientset, restclient *rest.RESTClient, cl *crv1.Pgcluster, namespace string) (string, string, string, error) {
-	ll := log.WithField("namespace", namespace).WithField("cluster", cl.Spec.Name)
+// CreateDatabaseSecrets create pgroot, pgprimary, and pguser secrets.
+// Updates the passed in Pgcluster with secret names, user names, and passwords.
+// Does not patch with any generated passwords as those are stored in secrets.
+func CreateDatabaseSecrets(
+	clientset *kubernetes.Clientset, restclient *rest.RESTClient, cl *crv1.Pgcluster, namespace string) (retErr error) {
 
-	//pgroot
-	pgUser := "postgres"
-	suffix := crv1.RootSecretSuffix
+	cluster := cl.Spec.Name
 
-	var secretName string
-	var err error
+	rootUser := "postgres"
+	rootParams := createSecretParams{
+		clientset:  clientset,
+		restClient: restclient,
+		cluster:    cluster,
+		namespace:  namespace,
 
-	secretName = cl.Spec.Name + suffix
-	l := ll.WithField("secretName", secretName)
-	pgPassword := GeneratePassword(10)
-	if cl.Spec.RootPassword != "" {
-		l.Debug("using user specified password")
-		pgPassword = cl.Spec.RootPassword
+		secretNamePath:    "/spec/rootsecretname",
+		secretName:        &cl.Spec.RootSecretName,
+		defaultSecretName: cluster + crv1.RootSecretSuffix,
+
+		user:     &rootUser,
+		password: &cl.Spec.RootPassword,
+	}
+	if err := rootParams.createSecret(); err != nil {
+		retErr = err
 	}
 
-	err = CreateSecret(clientset, cl.Spec.Name, secretName, pgUser, pgPassword, namespace)
-	if err != nil {
-		l.WithError(err).Error("error creating secret")
-	}
-
-	cl.Spec.RootSecretName = secretName
-	err = Patch(restclient, "/spec/rootsecretname", secretName, crv1.PgclusterResourcePlural, cl.Spec.Name, namespace)
-	if err != nil {
-		l.WithError(err).Error("error patching cluster")
-	}
-
-	///primary
 	primaryUser := "primaryuser"
-	suffix = crv1.PrimarySecretSuffix
+	primaryParams := createSecretParams{
+		clientset:  clientset,
+		restClient: restclient,
+		cluster:    cluster,
+		namespace:  namespace,
 
-	secretName = cl.Spec.Name + suffix
-	l = ll.WithField("secretName", secretName)
-	primaryPassword := GeneratePassword(10)
-	if cl.Spec.PrimaryPassword != "" {
-		l.Debug("using user specified password")
-		primaryPassword = cl.Spec.PrimaryPassword
+		secretNamePath:    "/spec/primarysecretname",
+		secretName:        &cl.Spec.PrimarySecretName,
+		defaultSecretName: cluster + crv1.PrimarySecretSuffix,
+
+		user:     &primaryUser,
+		password: &cl.Spec.PrimaryPassword,
+	}
+	if err := primaryParams.createSecret(); err != nil {
+		retErr = err
 	}
 
-	err = CreateSecret(clientset, cl.Spec.Name, secretName, primaryUser, primaryPassword, namespace)
-	if err != nil {
-		l.WithError(err).Error("error creating secret")
+	user := "testuser" // default, may be overridden
+	userParams := createSecretParams{
+		clientset:  clientset,
+		restClient: restclient,
+		cluster:    cluster,
+		namespace:  namespace,
+
+		secretNamePath:    "/spec/usersecretname",
+		secretName:        &cl.Spec.UserSecretName,
+		defaultSecretName: cluster + crv1.UserSecretSuffix(user),
+
+		userPath:    "/spec/user",
+		user:        &cl.Spec.User,
+		defaultUser: user,
+
+		password: &cl.Spec.Password,
+	}
+	if err := userParams.createSecret(); err != nil {
+		retErr = err
 	}
 
-	cl.Spec.PrimarySecretName = secretName
-	err = Patch(restclient, "/spec/primarysecretname", secretName, crv1.PgclusterResourcePlural, cl.Spec.Name, namespace)
-	if err != nil {
-		l.WithError(err).Error("error patching cluster")
-	}
+	return
+}
 
-	///pguser
-	username := "testuser"
-	if cl.Spec.User == "" {
-		err = Patch(restclient, "/spec/user", username, crv1.PgclusterResourcePlural, cl.Spec.Name, namespace)
-		if err != nil {
-			l.WithError(err).Error("error patching cluster")
+type createSecretParams struct {
+	clientset  *kubernetes.Clientset
+	restClient *rest.RESTClient
+	cluster    string
+	namespace  string
+
+	secretNamePath    string
+	secretName        *string
+	defaultSecretName string
+
+	userPath    string
+	user        *string
+	defaultUser string
+
+	password *string
+}
+
+// Creates secrets from secret name, user, and password, while ensuring that those values are
+// updated on the pgcluster object. If secret name or user are absent, then those are updated
+// with their defaults and the pgcluster is patched according to the provided paths.
+// If password is absent, then it's generated.
+func (p *createSecretParams) createSecret() (retErr error) {
+	l := p.log()
+
+	if *p.user == "" && p.defaultUser != "" {
+		*p.user = p.defaultUser
+		if err := p.patch(p.userPath, *p.user); err != nil {
+			retErr = err
 		}
+	}
+
+	if *p.secretName == "" && p.defaultSecretName != "" {
+		*p.secretName = p.defaultSecretName
+		if err := p.patch(p.secretNamePath, *p.secretName); err != nil {
+			retErr = err
+		}
+	}
+
+	l = l.WithField("secretName", *p.secretName)
+
+	if *p.password == "" {
+		*p.password = GeneratePassword(10)
+		// intentionally not patching the pgcluster to have password in plaintext
 	} else {
-		username = cl.Spec.User
-	}
-	suffix = crv1.UserSecretSuffix(username)
-
-	secretName = cl.Spec.Name + suffix
-	l = ll.WithField("secretName", secretName)
-	if cl.Spec.UserSecretName != "" {
-		secretName = cl.Spec.UserSecretName
-		l = ll.WithField("secretName", secretName)
-		l.Debug("using user specified user secret name")
+		l.Debug("using user specified password")
 	}
 
-	userPassword := GeneratePassword(10)
-	if cl.Spec.Password != "" {
-		l.Debug("using user specified password for secret")
-		userPassword = cl.Spec.Password
-	}
-
-	err = CreateSecret(clientset, cl.Spec.Name, secretName, username, userPassword, namespace)
+	err := CreateSecret(p.clientset, p.cluster, *p.secretName, *p.user, *p.password, p.namespace)
 	if err != nil {
+		retErr = err
 		l.WithError(err).Error("error creating secret")
 	}
 
-	if secretName != cl.Spec.UserSecretName {
-		cl.Spec.UserSecretName = secretName
-		err = Patch(restclient, "/spec/usersecretname", secretName, crv1.PgclusterResourcePlural, cl.Spec.Name, namespace)
-		if err != nil {
-			l.WithError(err).Error("error patching cluster")
-		}
-	}
+	return
+}
 
-	return pgPassword, primaryPassword, userPassword, err
+func (p *createSecretParams) patch(path, value string) error {
+	if err := Patch(p.restClient, path, value, crv1.PgclusterResourcePlural, p.cluster, p.namespace); err != nil {
+		p.log().WithError(err).Error("error patching cluster")
+		return err
+	}
+	return nil
+}
+
+func (p *createSecretParams) log() *log.Entry {
+	return log.WithField("namespace", p.namespace).WithField("cluster", p.cluster)
 }
 
 // CreateSecret create the secret, user, and primary secrets
