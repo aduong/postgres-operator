@@ -18,13 +18,14 @@ package pvc
 import (
 	"bytes"
 	"encoding/json"
+	"time"
+
 	log "github.com/Sirupsen/logrus"
 	crv1 "github.com/crunchydata/postgres-operator/apis/cr/v1"
 	"github.com/crunchydata/postgres-operator/kubeapi"
 	"github.com/crunchydata/postgres-operator/operator"
 	"k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes"
-	"time"
 )
 
 // TemplateFields ...
@@ -50,14 +51,14 @@ func CreatePVC(clientset *kubernetes.Clientset, storageSpec *crv1.PgStorageSpec,
 		pvcName = storageSpec.Name
 	case "create", "dynamic":
 		log.Debug("StorageType is create")
-		log.Debug("Name=%s Size=%s AccessMode=%s\n",
+		log.Debugf("Name=%s Size=%s AccessMode=%s\n",
 			pvcName, storageSpec.AccessMode, storageSpec.Size)
 		err = Create(clientset, pvcName, clusterName, storageSpec.AccessMode, storageSpec.Size, storageSpec.StorageType, storageSpec.StorageClass, namespace)
 		if err != nil {
-			log.Error("error in pvc create " + err.Error())
+			log.WithError(err).Error("error in pvc create")
 			return pvcName, err
 		}
-		log.Info("created PVC =" + pvcName + " in namespace " + namespace)
+		log.Infof("created PVC %s in namespace %s", pvcName, namespace)
 	}
 
 	return pvcName, err
@@ -120,16 +121,15 @@ func Delete(clientset *kubernetes.Clientset, name string, namespace string) erro
 	//see if the PVC exists
 	pvc, found, err = kubeapi.GetPVC(clientset, name, namespace)
 	if err != nil || !found {
-		log.Info("\nPVC %s\n", name+" is not found, will not attempt delete")
+		log.Infof("PVC %s not found, will not attempt delete", name)
 		return nil
 	}
 
-	log.Info("\nPVC %s\n", pvc.Name+" is found")
-	log.Info("%v\n", pvc)
+	log.Infof("PVC %s found: %v", pvc.Name, pvc)
 	//if pgremove = true remove it
 	if pvc.ObjectMeta.Labels["pgremove"] == "true" {
 		log.Info("pgremove is true on this pvc")
-		log.Debug("delete PVC " + name + " in namespace " + namespace)
+		log.Debugf("delete PVC %v in namespace %v", name, namespace)
 		err = kubeapi.DeletePVC(clientset, name, namespace)
 		if err != nil {
 			return err
