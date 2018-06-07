@@ -39,9 +39,9 @@ type PgclusterSpec struct {
 	CCPImageTag        string               `json:"ccpimagetag"`
 	Port               string               `json:"port"`
 	NodeName           string               `json:"nodename"`
-	PrimaryStorage     PgStorageSpec        `json:primarystorage`
-	ReplicaStorage     PgStorageSpec        `json:replicastorage`
-	ContainerResources PgContainerResources `json:containerresources`
+	PrimaryStorage     PgStorageSpec        `json:"primarystorage"`
+	ReplicaStorage     PgStorageSpec        `json:"replicastorage"`
+	ContainerResources PgContainerResources `json:"containerresources"`
 	PrimaryHost        string               `json:"primaryhost"`
 	PrimaryPassword    string               `json:"primarypassword"`
 	User               string               `json:"user"`
