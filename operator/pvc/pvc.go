@@ -40,25 +40,25 @@ type TemplateFields struct {
 // CreatePVC create a pvc
 func CreatePVC(clientset *kubernetes.Clientset, storageSpec *crv1.PgStorageSpec, pvcName, clusterName, namespace string) (string, error) {
 	var err error
+	l := log.WithField("namespace", namespace).WithField("pvcName", pvcName)
 
 	switch storageSpec.StorageType {
 	case "":
-		log.Debug("StorageType is empty")
+		l.Debug("StorageType is empty")
 	case "emptydir":
-		log.Debug("StorageType is emptydir")
+		l.Debug("StorageType is emptydir")
 	case "existing":
-		log.Debug("StorageType is existing")
+		l.Debug("StorageType is existing")
 		pvcName = storageSpec.Name
+		l = l.WithField("pvcName", pvcName)
 	case "create", "dynamic":
-		log.Debug("StorageType is create")
-		log.Debugf("Name=%s Size=%s AccessMode=%s\n",
-			pvcName, storageSpec.AccessMode, storageSpec.Size)
+		l.Debugf("StorageType is create. Size=%s AccessMode=%s", storageSpec.AccessMode, storageSpec.Size)
 		err = Create(clientset, pvcName, clusterName, storageSpec.AccessMode, storageSpec.Size, storageSpec.StorageType, storageSpec.StorageClass, namespace)
 		if err != nil {
-			log.WithError(err).Error("error in pvc create")
+			l.WithError(err).Error("error in pvc create")
 			return pvcName, err
 		}
-		log.Infof("created PVC %s in namespace %s", pvcName, namespace)
+		l.Infof("created PVC %s in namespace %s", pvcName, namespace)
 	}
 
 	return pvcName, err
@@ -113,7 +113,8 @@ func Create(clientset *kubernetes.Clientset, name, clusterName string, accessMod
 
 // Delete a pvc
 func Delete(clientset *kubernetes.Clientset, name string, namespace string) error {
-	log.Debug("in pvc.Delete")
+	l := log.WithField("namespace", namespace).WithField("pvcName", name)
+	l.Debug("in pvc.Delete")
 	var err error
 	var found bool
 	var pvc *v1.PersistentVolumeClaim
@@ -121,15 +122,14 @@ func Delete(clientset *kubernetes.Clientset, name string, namespace string) erro
 	//see if the PVC exists
 	pvc, found, err = kubeapi.GetPVC(clientset, name, namespace)
 	if err != nil || !found {
-		log.Infof("PVC %s not found, will not attempt delete", name)
+		l.WithError(err).Info("PVC not found, will not attempt delete")
 		return nil
 	}
 
-	log.Infof("PVC %s found: %v", pvc.Name, pvc)
+	l.Infof("PVC found: %v", pvc)
 	//if pgremove = true remove it
 	if pvc.ObjectMeta.Labels["pgremove"] == "true" {
-		log.Info("pgremove is true on this pvc")
-		log.Debugf("delete PVC %v in namespace %v", name, namespace)
+		l.Info("pgremove is true on this pvc")
 		err = kubeapi.DeletePVC(clientset, name, namespace)
 		if err != nil {
 			return err
